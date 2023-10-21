@@ -10,6 +10,8 @@
         "strict": true,
         "noImplicitAny": false,
         // "noUnusedLocals": true,
+        // Var på vei til å slå denne på igjen for å levere koden, men jeg følte at det visket vekk noen ting jeg har
+        // kommentert rundt, så valgte å la den stå av.
         "skipLibCheck": true,
         "types": ["node", "jest"],
         "forceConsistentCasingInFileNames": true
