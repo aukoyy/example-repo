@@ -133,7 +133,7 @@ api.post(
             links: [
                 {
                     rel: "session_link",
-                    href: "https://checkout.test.dintero.com/v1/view/3eacc06f-c9e7-4343-adbe-f3bbfa6cc7a9",
+                    href: `https://checkout.test.dintero.com/v1/view/${id}`,
                 },
             ],
         };
