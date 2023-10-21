@@ -1,5 +1,8 @@
 import express from "express";
 import { Pool } from "pg";
+import axios from "axios";
+import { v4 as uuidv4 } from "uuid";
+import { log } from "console";
 
 const wrap = (fn: express.RequestHandler): express.RequestHandler => {
     return (req, res, next) => {
@@ -11,7 +14,13 @@ const errorHandler: express.ErrorRequestHandler = (err, _, res, next) => {
     if (res.headersSent) {
         return next(err);
     }
-    res.status(500).json({ error: { message: "server error" } });
+
+    console.log(err.response.data);
+    console.log(err.response.data.error.errors);
+
+    res.status(err.response.status).json({
+        error: { message: err.response.data.error.message },
+    });
 };
 
 const simpleRequestLogger: express.RequestHandler = (req, res, next) => {
@@ -28,25 +37,13 @@ const simpleRequestLogger: express.RequestHandler = (req, res, next) => {
     next();
 };
 
-/* const pool = new Pool({
-    connectionString: process.env.DATABASE_URL,
-}); */
+// Dette er selfvfølgelig for testing. Slike strenger skal aldri ligge i kode som committes.
+// Om jeg skulle fortsatt her, så ville jeg laget en hjelpefunksjon for generere tokens. Evt. laget det som en middleware.
+const ACCESS_TOKEN = "";
 
-// async function connectToDB() {
 const pool = new Pool({
-    user: "postgres",
-    host: "localhost",
-    database: "orders",
-    password: "pass",
-    port: 5432,
+    connectionString: process.env.DATABASE_URL,
 });
-
-pool.on("error", (err, client) => {
-    console.error("Unexpected error on idle client", err);
-    process.exit(-1);
-});
-
-// console.log(await pool.query("SELECT NOW()"));
 
 const api = express();
 api.use(express.json());
@@ -64,8 +61,9 @@ api.get(
 api.get(
     "/ping/",
     wrap(async (_, res) => {
-        await pool.query("SELECT count(*) from payments");
-        res.status(200).json({ ping: "pong" });
+        const result = await pool.query("SELECT count(*) from payments");
+        console.log(result.rowCount);
+        res.status(200).json({ ping: "pong", count: result.rowCount });
     }),
 );
 
@@ -73,25 +71,108 @@ api.get(
 api.post(
     "/orders/",
     wrap(async (req, res) => {
-        const body = req.body;
-        console.log("====================================");
-        console.log(body);
+        const order = req.body;
+        const id = uuidv4();
+        console.log("Id:", id);
 
-        // Now you can access properties of the request body.
-        const message = body.message;
-        console.log("Message:", message);
+        // POST to dintero
 
-        // You should remove the quotes around req.body, as it's a variable.
-        res.status(200).json(req.body);
+        const { data } = await axios.post(
+            "https://checkout.test.dintero.com/v1/sessions-profile",
+            {
+                order: {
+                    amount: order.amount,
+                    currency: order.currency,
+                    merchant_reference: "aukstore",
+                },
+                url: {
+                    return_url: `http://localhost:3000/orders/${id}/redirect`,
+                },
+                profile_id: "default",
+            },
+            {
+                headers: {
+                    "Content-Type": "application/json",
+                    Authorization: `Bearer ${ACCESS_TOKEN}`,
+                },
+            },
+        );
+
+        console.log(data);
+
+        // PUT in db
+
+        const dbresult = await pool.query(
+            "INSERT INTO payments (id, amount, currency, receipt, status) VALUES ($1, $2, $3, $4, $5)",
+            [id, order.amount, order.currency, order.receipt, "PENDING"],
+        );
+        const insertedRow = dbresult.rows[0]; // this turns out to be undefined.
+
+        // RESPONSE
+        const response = {
+            id,
+            created_at: new Date().toISOString(), // should get returned from db or dintero
+            amount: order.amount,
+            currency: order.currency,
+            receipt: order.receipt,
+            status: "DONE",
+            links: [
+                {
+                    rel: "session_link",
+                    href: "https://checkout.test.dintero.com/v1/view/3eacc06f-c9e7-4343-adbe-f3bbfa6cc7a9",
+                },
+            ],
+        };
+
+        res.status(200).json(response);
     }),
 );
 
-// Update order
-// - `GET /orders/{id}/payment-redirect` - Update order from payment redirect
-// Update should be patch?
+// Update order from payment redirect
+api.get(
+    "/orders/:id/payment-redirect",
+    wrap(async (req, res) => {
+        const orderId = req.params.id;
+        // Update order in db
+        try {
+            console.log("Updating order in db", orderId);
+            await pool.query("UPDATE payments SET status = $1 WHERE id = $2", [
+                "AUTHORIZED",
+                orderId,
+            ]);
+        } catch (e) {
+            console.log(e);
+            res.status(404).json({ error: "Order not found" });
+        }
+
+        res.status(200).json({ message: "Payment successful" });
+    }),
+);
 
 // Get orders
-// - `GET /orders` - List orders with current payment status
+api.get(
+    "/orders/",
+    wrap(async (_, res) => {
+        const result = await pool.query("SELECT * from payments");
+        console.log(result.rows);
+        // console.log(result.rows[0]);
+
+        // RESPONSE
+        let response: any[] = [];
+        for (const row of result.rows) {
+            response.push({
+                id: row.id,
+                created_at: row.created_at,
+                amount: row.amount,
+                currency: row.currency,
+                receipt: row.receipt,
+                status: row.status,
+            });
+        }
+
+        res.status(200).json({ orders: response });
+    }),
+);
 
 api.use(errorHandler);
 
